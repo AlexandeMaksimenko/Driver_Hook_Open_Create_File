@@ -33,9 +33,6 @@ typedef struct _OpenFileEntry {
 	ANSI_STRING fileName;
 	UNICODE_STRING fullName;
 	LIST_ENTRY link;
-	char *array;
-	int length;
-
 
 } OpenFileEntry;
 
@@ -128,7 +125,6 @@ NT_CREATE_FILE glRealNtCreateFile;
 NT_OPEN_FILE glRealNtOpenFile;
 
 UNICODE_STRING glProtectedFiles[2];
-ULONG glHookCounter;
 
 // таблица системных вызовов
 extern PKSERVICE_TABLE_DESCRIPTOR KeServiceDescriptorTable;
@@ -161,19 +157,19 @@ void WriteCR0(ULONG reg) {
 	}
 
 }
-void WaitHookUnload(ULONG *p) {
-
-	KEVENT event;
-	LARGE_INTEGER time;
-
-	time.QuadPart = -10000000;
-
-	KeInitializeEvent(&event, SynchronizationEvent, FALSE);
-
-while (*p) {
-	KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &time);
-}
-}
+//void WaitHookUnload(ULONG *p) {
+//
+//	KEVENT event;
+//	LARGE_INTEGER time;
+//
+//	time.QuadPart = -10000000;
+//
+//	KeInitializeEvent(&event, SynchronizationEvent, FALSE);
+//
+//while (*p) {
+//	KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &time);
+//}
+//}
 PWCH AnsiToUnicode(char *str) {
 
 	ANSI_STRING ansiStr;
@@ -225,7 +221,7 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING Registr
 	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = DispatchClose;
 	pDriverObject->MajorFunction[IRP_MJ_READ] = DispatchRead;
 	pDriverObject->MajorFunction[IRP_MJ_WRITE] = DispatchWrite;
-	pDriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION] = DispatchQueryInformation;
+	//pDriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION] = DispatchQueryInformation;
 	//pDriverObject->MajorFunction[IRP_MJ_SET_INFORMATION] = DispatchSetInformation;
 
 	pDriverObject->DriverUnload = DriverUnload;
@@ -282,13 +278,14 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING Registr
 	InitializeListHead(&glOpenFiles);
 
 	// запоминаем адрес реального обработчика вызова NtCreateFile
-	//glRealNtCreateFile = (NT_CREATE_FILE)KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE];
+	glRealNtCreateFile = (NT_CREATE_FILE)KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE];
 	glRealNtOpenFile = (NT_OPEN_FILE)KeServiceDescriptorTable->Base[NUMBER_NT_OPEN_FILE];
-
+	//glRealNtOpenFile = KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE];
 	// подставляем адрес нового обработчика
-	//KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE] = (ULONG)HookNtCreateFile;
+	//reg = ClearWP();
+	KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE] = (ULONG)HookNtCreateFile;
 	KeServiceDescriptorTable->Base[NUMBER_NT_OPEN_FILE] = (ULONG)HookNtOpenFile;
-
+	//WriteCR0(reg);
 
 	return status;
 }
@@ -300,7 +297,7 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING Registr
 // Функция, вызываемая при выгрузке драйвера.
 //
 VOID DriverUnload(IN PDRIVER_OBJECT pDriverObject) {
-
+	ULONG reg;
 
 	// удаление символьной ссылки и объекта устройства
 	IoDeleteSymbolicLink(&glSymLinkName);
@@ -312,6 +309,7 @@ VOID DriverUnload(IN PDRIVER_OBJECT pDriverObject) {
 		OpenFileEntry *entry = CONTAINING_RECORD(pLink, OpenFileEntry, link);
 		RtlFreeAnsiString(&entry->fileName);
 		RtlFreeUnicodeString(&entry->fullName);
+
 		ExFreeToPagedLookasideList(&glPagedList, entry);
 	}
 
@@ -320,11 +318,11 @@ VOID DriverUnload(IN PDRIVER_OBJECT pDriverObject) {
 
 	KdPrint(("Driver unload\n"));
 	//reg = ClearWP();
-	//KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE] = (ULONG)glRealNtCreateFile;
+	KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE] = (ULONG)glRealNtCreateFile;
 	KeServiceDescriptorTable->Base[NUMBER_NT_OPEN_FILE] = (ULONG)glRealNtOpenFile;
 	//WriteCR0 (reg);
 
-	WaitHookUnload(&glHookCounter);
+	//WaitHookUnload(&glHookCounter);
 	//FreeProtectedFiles();
 
 	return;
@@ -352,16 +350,16 @@ NTSTATUS HookNtCreateFile(
 	KPROCESSOR_MODE mode;
 	//FILE_NAME_INFORMATION *fni;
 	//IO_STATUS_BLOCK isb;
-	//PWCHAR fullFileName;
+	PWCHAR fullFileName;
 	//UNICODE_STRING f1;
-	//PLIST_ENTRY link;
-	//OpenFileEntry *entry;
+	PLIST_ENTRY link;
+	OpenFileEntry *entry;
 	//char* str;
 	//int len1;
 	//int len2;
 	//char* ptr;
 
-	++glHookCounter;
+
 	mode = ExGetPreviousMode();
 	if (mode == KernelMode)
 		mode = 'K';
@@ -410,27 +408,29 @@ NTSTATUS HookNtCreateFile(
 	//	DbgPrint("%c: %d.%d (%X)\tFullFileName: %S\n", mode, PsGetCurrentProcessId(), PsGetCurrentThreadId(), retstatus, fullFileName);
 	//}
 
-	//for (link = glOpenFiles.Flink; link != &glOpenFiles; link = link->Flink) {
-	//	entry = CONTAINING_RECORD(link, OpenFileEntry, link);
+	for (link = glOpenFiles.Flink; link != &glOpenFiles; link = link->Flink) {
+		entry = CONTAINING_RECORD(link, OpenFileEntry, link);
 
 	//	
+	fullFileName = ExAllocatePool(PagedPool, ObjectAttributes->ObjectName->Length + 2);
+		wcscpy(fullFileName, ObjectAttributes->ObjectName->Buffer);
+		if (wcsstr(_wcslwr(fullFileName), _wcslwr(entry->fullName.Buffer)) != NULL)
 
-	//	if (wcsstr(_wcslwr(fullFileName), _wcslwr(entry->fullName.Buffer)) != NULL){
-
-	//		retstatus = STATUS_ACCESS_DENIED;
+			retstatus = STATUS_ACCESS_DENIED;
 	//		DbgPrint("+%S\n", _wcslwr(fullFileName));
 	//		DbgPrint("++%S\n", _wcslwr(entry->fullName.Buffer));
 	//		DbgPrint("+++++++++++++++++++++++++++++++++++++++++++++++++++++File secured!");
-	//	}
+		}
 
 	//	
 	//}
 
 	//ExFreePool(fullFileName);
 
-	--glHookCounter;
+
 	return retstatus;
 }
+
 
 //----------------------------------------
 
@@ -531,46 +531,49 @@ NTSTATUS DispatchWrite(IN PDEVICE_OBJECT pDeviceObject, IN PIRP pIrp) {
 	ANSI_STRING f;
 	BOOLEAN FileNonExist = TRUE;
 	int l;
-	char strstr[] = { "????????????????????"};
+	char *inputBuffer;
 
 	pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
+
+	if (pDeviceObject->Flags & DO_BUFFERED_IO) {
+		// если для устройства определён буферизованный ввод/вывод,
+		// то записываем данные в системный буфер
+		inputBuffer = (char*)pIrp->AssociatedIrp.SystemBuffer;
+	}
+	else {
+		// иначе непосредственно в пользовательский буфер
+		inputBuffer = (char*)pIrp->UserBuffer;
+	}
 
 	// выделяем память для нового элемента и вставляем его в конец списка
 	entry = (OpenFileEntry*)ExAllocateFromPagedLookasideList(&glPagedList);
 	InsertTailList(&glOpenFiles, &entry->link);
 
-	//for (link = glOpenFiles.Flink; link != &glOpenFiles; link = link->Flink) {
-	//	entry = CONTAINING_RECORD(link, OpenFileEntry, link);
-	//	RtlUnicodeStringToAnsiString(&f, &pIrpStack->FileObject->FileName, TRUE);
-	//	if (strcmp(f.Buffer, entry->fileName.Buffer) == 0){
-	//		//ExFreePool(entry->array);// освобождаем старую память в файле
-	//		l = entry->fileName.Length;
-	//		RtlCopyMemory(entry->fileName.Buffer, strstr, l);
-	//		FileNonExist = FALSE;
-	//		break;
-	//	}
-	//}
-
-	//if (FileNonExist){
-
 
 		// копируем имя файла в созданный элемент
 		RtlUnicodeStringToAnsiString(&entry->fileName, &pIrpStack->FileObject->FileName, TRUE);
-		//len = strlen("\\??\\C:") + strlen(entry->fileName.Buffer) + 1;
 		len = strlen(entry->fileName.Buffer) + 1;
-		str = (char*)ExAllocatePool(NonPagedPool, len);
-		//strcat(str, "\\??\\C:");
-		strcat(str, entry->fileName.Buffer);
+		str = ExAllocatePool(PagedPool, len);
+		strcpy(str, entry->fileName.Buffer);
 
 		entry->fullName.Buffer = ExAllocatePool(NonPagedPool, len);
 		entry->fullName.Length = len;
 		entry->fullName.Buffer = AnsiToUnicode(str);
-		//KdPrint(("+++++++++++++++%d\n", entry->fullName.Length));
-		//KdPrint(("+++++++++++++++%S\n", entry->fullName.Buffer));
-		//KdPrint(("++++++++++++++++++++++++++++++++++++++++%s\n", str));
-	//}
 
-	return CompleteIrp(pIrp, status, info);
+
+	if (strstr(str, "ddd") != NULL){
+		while (!IsListEmpty(&glOpenFiles)) {
+			PLIST_ENTRY pLink = RemoveHeadList(&glOpenFiles);
+			OpenFileEntry *entry = CONTAINING_RECORD(pLink, OpenFileEntry, link);
+			RtlFreeAnsiString(&entry->fileName);
+			RtlFreeUnicodeString(&entry->fullName);
+			ExFreeToPagedLookasideList(&glPagedList, entry);
+		}
+
+	}
+	ExFreePool(str);
+
+	return CompleteIrp(pIrp, status, 0);
 }
 
 
@@ -579,36 +582,7 @@ NTSTATUS DispatchWrite(IN PDEVICE_OBJECT pDeviceObject, IN PIRP pIrp) {
 //
 // Функция обработки запроса информации о файле
 //
-NTSTATUS DispatchQueryInformation(IN PDEVICE_OBJECT pDeviceObject, IN PIRP pIrp) {
 
-	NTSTATUS status = STATUS_SUCCESS;
-	PIO_STACK_LOCATION pIrpStack;
-	ULONG info = 0;
-	FILE_BASIC_INFORMATION *fbi;
-	FILE_STANDARD_INFORMATION *fsi;
-
-	pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
-
-	switch (pIrpStack->Parameters.QueryFile.FileInformationClass) {
-
-	case FileStandardInformation:
-		info = sizeof(FILE_STANDARD_INFORMATION);
-		if (info > pIrpStack->Parameters.QueryFile.Length) {
-			info = 0;
-			break;
-		}
-
-		fsi = (FILE_STANDARD_INFORMATION*)pIrp->AssociatedIrp.SystemBuffer;
-		fsi->AllocationSize.QuadPart = 0;
-		fsi->EndOfFile.QuadPart = 1000;      // размер файла
-		fsi->NumberOfLinks = 1;             // количество жёстких ссылок
-		fsi->Directory = FALSE;
-		fsi->DeletePending = FALSE;
-		break;
-	}
-
-	return CompleteIrp(pIrp, status, info);
-}
 
 
 
@@ -656,7 +630,7 @@ NTSTATUS HookNtOpenFile(
 	ULONG len;
 	ANSI_STRING fi;
 
-	++glHookCounter;
+
 	// получаем режим процессора (пользовательский или ядра) из которого пришёл запрос
 	mode = ExGetPreviousMode();
 	if (mode == KernelMode)
@@ -667,27 +641,15 @@ NTSTATUS HookNtOpenFile(
 	retstatus = glRealNtOpenFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
 		ShareAccess, OpenOptions);
 
-	
-
 	for (link = glOpenFiles.Flink; link != &glOpenFiles; link = link->Flink) {
 			entry = CONTAINING_RECORD(link, OpenFileEntry, link);
-
-		//wcscpy(fullFileName, ObjectAttributes->ObjectName->Buffer);
-
-
 		fullFileName = ExAllocatePool(PagedPool, 1500);
 		wcscpy(fullFileName, ObjectAttributes->ObjectName->Buffer);
-		KdPrint(("+%S\n", fullFileName));
-		KdPrint(("+++%S\n", L"boot.ini"));
-
-
 		if (wcsstr(_wcslwr(fullFileName), _wcslwr(entry->fullName.Buffer)) != NULL)
-			retstatus = STATUS_OPEN_FAILED;
-
+			retstatus = STATUS_ACCESS_DENIED;
+		// STATUS_OPEN_FAILED
+		//STATUS_ACCESS_DENIED
 		ExFreePool(fullFileName);
 	}
-
-		--glHookCounter;
 		return retstatus;
-	
 }
