@@ -222,7 +222,7 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING Registr
 	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = DispatchClose;
 	pDriverObject->MajorFunction[IRP_MJ_READ] = DispatchRead;
 	pDriverObject->MajorFunction[IRP_MJ_WRITE] = DispatchWrite;
-	//pDriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION] = DispatchQueryInformation;
+	pDriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION] = DispatchQueryInformation;
 	//pDriverObject->MajorFunction[IRP_MJ_SET_INFORMATION] = DispatchSetInformation;
 
 	pDriverObject->DriverUnload = DriverUnload;
@@ -283,10 +283,10 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING Registr
 	glRealNtOpenFile = (NT_OPEN_FILE)KeServiceDescriptorTable->Base[NUMBER_NT_OPEN_FILE];
 	//glRealNtOpenFile = KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE];
 	// подставляем адрес нового обработчика
-	//reg = ClearWP();
+	reg = ClearWP();
 	KeServiceDescriptorTable->Base[NUMBER_NT_CREATE_FILE] = (ULONG)HookNtCreateFile;
 	KeServiceDescriptorTable->Base[NUMBER_NT_OPEN_FILE] = (ULONG)HookNtOpenFile;
-	//WriteCR0(reg);
+	WriteCR0(reg);
 
 	return status;
 }
@@ -308,6 +308,7 @@ VOID DriverUnload(IN PDRIVER_OBJECT pDriverObject) {
 	while (!IsListEmpty(&glOpenFiles)) {
 		PLIST_ENTRY pLink = RemoveHeadList(&glOpenFiles);
 		OpenFileEntry *entry = CONTAINING_RECORD(pLink, OpenFileEntry, link);
+
 		RtlFreeAnsiString(&entry->fileName);
 		RtlFreeUnicodeString(&entry->fullName);
 
@@ -410,24 +411,13 @@ NTSTATUS HookNtCreateFile(
 	//}
 
 	for (link = glOpenFiles.Flink; link != &glOpenFiles; link = link->Flink) {
-		entry = CONTAINING_RECORD(link, OpenFileEntry, link);
-
-	//	
+		entry = CONTAINING_RECORD(link, OpenFileEntry, link);	
 		fullFileName = ExAllocatePool(NonPagedPool, ObjectAttributes->ObjectName->Length + 2);
 		wcscpy(fullFileName, ObjectAttributes->ObjectName->Buffer);
 		if (wcsstr(_wcslwr(fullFileName), _wcslwr(entry->fullName.Buffer)) != NULL)
-
 			retstatus = STATUS_ACCESS_DENIED;
-	//		DbgPrint("+%S\n", _wcslwr(fullFileName));
-	//		DbgPrint("++%S\n", _wcslwr(entry->fullName.Buffer));
-	//		DbgPrint("+++++++++++++++++++++++++++++++++++++++++++++++++++++File secured!");
-		}
-
-	//	
-	//}
-
-	//ExFreePool(fullFileName);
-
+		ExFreePool(fullFileName);
+	}
 
 	return retstatus;
 }
@@ -497,7 +487,7 @@ NTSTATUS DispatchRead(IN PDEVICE_OBJECT pDeviceObject, IN PIRP pIrp) {
 		inputBuffer = (char*)pIrp->UserBuffer;
 	}
 
-	while (!IsListEmpty(&glOpenFiles)) {
+	for (link = glOpenFiles.Flink; link != &glOpenFiles; link = link->Flink) {
 		OpenFileEntry *entry = CONTAINING_RECORD(link, OpenFileEntry, link);
 		if (info + entry->fileName.Length + 1 <= pIrpStack->Parameters.Read.Length) {
 			RtlCopyMemory(inputBuffer + info, entry->fileName.Buffer, entry->fileName.Length);
@@ -525,12 +515,14 @@ NTSTATUS DispatchWrite(IN PDEVICE_OBJECT pDeviceObject, IN PIRP pIrp) {
 	ULONG info = 0;
 	OpenFileEntry *entry;
 	char* str;
+	char* str1;
 	PLIST_ENTRY link;
 	int len;
 	ANSI_STRING f;
 	BOOLEAN FileNonExist = TRUE;
 	int l;
 	char *inputBuffer;
+	int i;
 
 	pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
 
@@ -555,9 +547,19 @@ NTSTATUS DispatchWrite(IN PDEVICE_OBJECT pDeviceObject, IN PIRP pIrp) {
 		str = ExAllocatePool(NonPagedPool, len);
 		strcpy(str, entry->fileName.Buffer);
 
-		entry->fullName.Buffer = ExAllocatePool(NonPagedPool, len);
-		entry->fullName.Length = len;
-		entry->fullName.Buffer = AnsiToUnicode(str);
+		//entry->fullName.Buffer = ExAllocatePool(NonPagedPool, len);
+		//entry->fullName.Length = len;
+		if (strstr(str, "??") != NULL){
+			str1 = ExAllocatePool(NonPagedPool, len - 4);
+			strncpy_s(str1, 0, str, 4);
+			//for (i = 0; i < len; i++){
+			//	str1[i] = str[i + 4];
+			//}
+			entry->fullName.Buffer = AnsiToUnicode(str1);
+			ExFreePool(str1);
+		}
+		else
+			entry->fullName.Buffer = AnsiToUnicode(str);
 
 
 	if (strstr(str, "ddd") != NULL){
@@ -571,8 +573,11 @@ NTSTATUS DispatchWrite(IN PDEVICE_OBJECT pDeviceObject, IN PIRP pIrp) {
 
 	}
 	ExFreePool(str);
+	
+	///////////////////////////////////////////////////////////////////////////////////////////
 
-	return CompleteIrp(pIrp, status, 0);
+
+	return CompleteIrp(pIrp, status, info);
 }
 
 
@@ -601,7 +606,38 @@ NTSTATUS CompleteIrp(PIRP pIrp, NTSTATUS status, ULONG info) {
 
 
 //--------------------
+// Функция обработки запроса информации о файле
+//
+NTSTATUS DispatchQueryInformation(IN PDEVICE_OBJECT pDeviceObject, IN PIRP pIrp) {
 
+	NTSTATUS status = STATUS_SUCCESS;
+	PIO_STACK_LOCATION pIrpStack;
+	ULONG info = 0;
+	FILE_BASIC_INFORMATION *fbi;
+	FILE_STANDARD_INFORMATION *fsi;
+
+	pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
+
+	switch (pIrpStack->Parameters.QueryFile.FileInformationClass) {
+
+	case FileStandardInformation:
+		info = sizeof(FILE_STANDARD_INFORMATION);
+		if (info > pIrpStack->Parameters.QueryFile.Length) {
+			info = 0;
+			break;
+		}
+
+		fsi = (FILE_STANDARD_INFORMATION*)pIrp->AssociatedIrp.SystemBuffer;
+		fsi->AllocationSize.QuadPart = 0;
+		fsi->EndOfFile.QuadPart = 1000;  // размер файла
+		fsi->NumberOfLinks = 1;             // количество жёстких ссылок
+		fsi->Directory = FALSE;
+		fsi->DeletePending = FALSE;
+		break;
+	}
+
+	return CompleteIrp(pIrp, status, info);
+}
 //--------------------
 NTSTATUS HookNtOpenFile(
 	OUT PHANDLE FileHandle,
