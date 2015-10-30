@@ -1,0 +1,11 @@
+﻿Сборка начата 06.06.2015 19:44:33.
+     1>Проект "C:\Users\Ололо\Desktop\sysprog\driver_work\examples\list\Driver_9.vcxproj" в узле 2 (целевые объекты Build).
+     1>ClCompile:
+         C:\Program Files (x86)\Microsoft Visual Studio 12.0\VC\bin\CL.exe /c /I. /Zi /nologo /W1 /WX- /Od /Oi /Oy- /D _X86_=1 /D i386=1 /D STD_CALL /D CONDITION_HANDLING=1 /D NT_INST=0 /D WIN32=100 /D _NT1X_=100 /D WINNT=1 /D _WIN32_WINNT=0x0501 /D WIN32_LEAN_AND_MEAN=1 /D DEVL=1 /D DBG=1 /D FPO=0 /D _DLL=1 /D _VC80_UPGRADE=0x0600 /D _WINDLL /GF /Gm- /EHa /MT /GS- /Gy- /fp:precise /Zc:wchar_t /Zc:forScope /Fo".\objchk\i386/" /Fd".\objchk\i386\Driver.pdb" /FR".\objchk\i386\\" /Gz /TC /FIwarning.h /analyze- /errorReport:prompt init.c
+         init.c
+     1>init.c(12): fatal error C1083: Не удается открыть файл включение: ntddk.h: No such file or directory
+     1>Сборка проекта "C:\Users\Ололо\Desktop\sysprog\driver_work\examples\list\Driver_9.vcxproj" завершена (целевые объекты Build) с ошибкой.
+
+Ошибка сборки.
+
+Затраченное время: 00:00:01.97
